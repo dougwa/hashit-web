@@ -1,0 +1,11 @@
+# hashit-managed metadata (the backend / its `rm` alias may drop these here)
+.hashit
+.hashit-drive
+.hashit.tmp.*
+*.dedup
+
+# dependencies / build output (adjust once a stack is chosen)
+node_modules/
+dist/
+build/
+.DS_Store
