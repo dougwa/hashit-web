@@ -1,273 +1,189 @@
 "use client";
 import { useState } from "react";
-import Link from "next/link";
-import type { ContentDetail as ContentDetailType } from "@/lib/types";
-import { api } from "@/lib/api";
+import type { MetaEntry } from "@/lib/types";
 
 interface Props {
-  detail: ContentDetailType;
+  hash: string;
+  entries: MetaEntry[];
+  fileOpsDown?: boolean;
 }
 
-export default function ContentDetail({ detail }: Props) {
-  const [tags, setTags] = useState<string[]>(detail.tags ?? []);
-  const [favorite, setFavorite] = useState(tags.includes("favorite"));
-  const [newTag, setNewTag] = useState("");
-  const [dedupState, setDedupState] = useState<"idle" | "confirm" | "done">("idle");
-  const [dedupKeep, setDedupKeep] = useState<{ drive: string; path: string } | null>(null);
-  const [dedupResult, setDedupResult] = useState<string | null>(null);
+export default function ContentDetail({ hash, entries, fileOpsDown }: Props) {
+  // All entries share the same hash; use the first for file-level info.
+  const primary = entries[0];
+  const previewSrc = primary.preview
+    ? `/api/file?path=${encodeURIComponent(primary.preview)}`
+    : primary.thumbnail
+    ? `/api/file?path=${encodeURIComponent(primary.thumbnail)}`
+    : null;
+  const downloadHref = `/api/file?path=${encodeURIComponent(primary.path)}&download=1`;
 
-  const hash = detail.hash ?? "";
-  const locations = detail.locations ?? [];
-  const online = locations.some((l) => l.online);
+  // Merge properties from all entries (they should be identical, keyed by hash).
+  const [properties, setProperties] = useState<Record<string, string>>(
+    primary.properties ?? {}
+  );
+  const [newKey, setNewKey] = useState("");
+  const [newValue, setNewValue] = useState("");
+  const [saving, setSaving] = useState(false);
 
-  async function addTag(e: React.FormEvent) {
+  const tags = primary.tags ?? {};
+  const tagEntries = Object.entries(tags);
+
+  async function addProperty(e: React.FormEvent) {
     e.preventDefault();
-    if (!newTag.trim()) return;
-    const { data } = await api.POST("/v1/content/{hash}/tags", {
-      params: { path: { hash } },
-      body: { tags: [newTag.trim()] },
+    if (!newKey.trim()) return;
+    setSaving(true);
+    await fetch("/api/meta", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        paths: entries.map((e) => e.path),
+        set: { [newKey.trim()]: newValue.trim() },
+        remove: [],
+      }),
     });
-    if (data) setTags(data);
-    setNewTag("");
+    setProperties((p) => ({ ...p, [newKey.trim()]: newValue.trim() }));
+    setNewKey("");
+    setNewValue("");
+    setSaving(false);
   }
 
-  async function removeTag(tag: string) {
-    const { data } = await api.DELETE("/v1/content/{hash}/tags/{tag}", {
-      params: { path: { hash, tag } },
+  async function removeProperty(key: string) {
+    await fetch("/api/meta", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        paths: entries.map((e) => e.path),
+        set: {},
+        remove: [key],
+      }),
     });
-    if (data) setTags(data);
-  }
-
-  async function toggleFavorite() {
-    if (favorite) {
-      await api.DELETE("/v1/content/{hash}/favorite", { params: { path: { hash } } });
-    } else {
-      await api.POST("/v1/content/{hash}/favorite", { params: { path: { hash } } });
-    }
-    setFavorite(!favorite);
-  }
-
-  async function confirmDedup() {
-    if (!dedupKeep) return;
-    const { data, error } = await api.POST("/v1/content/{hash}/dedup", {
-      params: { path: { hash } },
-      body: { keep_drive: dedupKeep.drive, keep_path: dedupKeep.path, confirm: true },
+    setProperties((p) => {
+      const next = { ...p };
+      delete next[key];
+      return next;
     });
-    if (data) {
-      setDedupResult(`Kept ${data.kept}. Removed ${data.removed?.length ?? 0} copy(ies).`);
-      setDedupState("done");
-    } else {
-      setDedupResult("Dedup failed (writes disabled or server error).");
-      setDedupState("done");
-    }
-  }
-
-  // Group metadata by group name
-  const metaGroups: Record<string, { key: string; value: string }[]> = {};
-  for (const m of detail.metadata ?? []) {
-    const g = m.group ?? "Other";
-    if (!metaGroups[g]) metaGroups[g] = [];
-    metaGroups[g].push({ key: m.key ?? "", value: m.value ?? "" });
   }
 
   return (
     <div className="max-w-4xl">
+      {fileOpsDown && (
+        <p className="text-amber-400 text-xs mb-4">
+          hashit FileOps service unavailable — tags and properties require{" "}
+          <code className="font-mono">hashit watch --serve</code> on port 50552.
+        </p>
+      )}
       {/* Header */}
-      <div className="flex items-start gap-4 mb-6">
-        <div className="flex-1 min-w-0">
-          <h1 className="text-base font-semibold text-slate-100 truncate">
-            {locations[0]?.path?.split("/").pop() ?? hash.slice(0, 16)}
-          </h1>
-          <p className="text-xs text-slate-500 font-mono mt-0.5">{hash}</p>
-        </div>
-        <button
-          onClick={toggleFavorite}
-          className={`text-lg transition-colors ${favorite ? "text-yellow-400" : "text-slate-600 hover:text-slate-400"}`}
-          title={favorite ? "Unfavorite" : "Favorite"}
-        >
-          ★
-        </button>
+      <div className="mb-6">
+        <h1 className="text-base font-semibold text-slate-100 truncate">
+          {primary.path.split("/").pop()}
+        </h1>
+        <p className="text-xs text-slate-500 font-mono mt-0.5">{hash}</p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left: thumbnail + file info */}
+        {/* Left: file info */}
         <div className="lg:col-span-1 space-y-4">
-          {detail.has_thumb && (
+          {previewSrc && (
+            // eslint-disable-next-line @next/next/no-img-element
             <img
-              src={`/api/v1/thumb/${hash}`}
-              alt=""
-              className="w-full rounded-lg border border-slate-800 bg-slate-900"
+              src={previewSrc}
+              alt="Preview"
+              className="w-full rounded-lg border border-slate-800 object-contain max-h-80"
             />
           )}
 
           <InfoTable>
-            {detail.file_type && <InfoRow label="Type" value={detail.file_type} />}
-            {detail.ext && <InfoRow label="Extension" value={`.${detail.ext}`} />}
-            {detail.size != null && <InfoRow label="Size" value={formatBytes(detail.size)} />}
-            <InfoRow label="Online" value={online ? "Yes" : "No"} />
-            <InfoRow label="Copies" value={String(locations.length)} />
+            {primary.file_type && <InfoRow label="Type" value={primary.file_type} />}
+            {primary.ext && <InfoRow label="Ext" value={`.${primary.ext}`} />}
+            {primary.size > 0 && (
+              <InfoRow label="Size" value={formatBytes(primary.size)} />
+            )}
+            <InfoRow label="Algo" value={primary.algo} />
           </InfoTable>
 
-          {/* Download link (only if online) */}
-          {online && (
-            <a
-              href={`/api/v1/content/${hash}`}
-              download
-              className="block text-center text-sm text-slate-400 border border-slate-700 rounded px-3 py-2 hover:border-slate-500 hover:text-slate-200 transition-colors"
-            >
-              Download
-            </a>
-          )}
+          <a
+            href={downloadHref}
+            className="block w-full text-center px-3 py-1.5 border border-slate-700 rounded text-sm text-slate-300 hover:border-slate-500 hover:text-white transition-colors"
+          >
+            Download
+          </a>
         </div>
 
-        {/* Right: tags, locations, metadata, dedup */}
+        {/* Right: locations, extracted tags, user properties */}
         <div className="lg:col-span-2 space-y-6">
-          {/* Tags */}
-          <Section title="Tags">
-            <div className="flex flex-wrap gap-2 mb-3">
-              {tags.length === 0 && <span className="text-slate-500 text-sm">No tags.</span>}
-              {tags.map((tag) => (
-                <span
-                  key={tag}
-                  className="flex items-center gap-1 bg-slate-800 text-slate-300 text-xs px-2 py-1 rounded"
-                >
-                  {tag}
+          {/* Locations */}
+          <Section title={`Locations (${entries.length})`}>
+            <div className="space-y-1">
+              {entries.map((entry, i) => (
+                <div key={i} className="text-xs font-mono text-slate-400 truncate">
+                  {entry.error ? (
+                    <span className="text-red-400">{entry.path} — {entry.error}</span>
+                  ) : (
+                    entry.path
+                  )}
+                </div>
+              ))}
+            </div>
+          </Section>
+
+          {/* Extracted tags (read-only) */}
+          {tagEntries.length > 0 && (
+            <Section title="Extracted metadata">
+              <InfoTable>
+                {tagEntries.map(([k, v]) => (
+                  <InfoRow key={k} label={k} value={v} />
+                ))}
+              </InfoTable>
+            </Section>
+          )}
+
+          {/* User properties (read-write) */}
+          <Section title="Properties">
+            <div className="space-y-1 mb-3">
+              {Object.keys(properties).length === 0 && (
+                <p className="text-slate-500 text-sm">No properties set.</p>
+              )}
+              {Object.entries(properties).map(([k, v]) => (
+                <div key={k} className="flex items-center gap-2 text-sm">
+                  <span className="text-slate-400 font-mono text-xs flex-1 truncate">
+                    <span className="text-slate-300">{k}</span>
+                    {v && <span className="text-slate-600"> = {v}</span>}
+                  </span>
                   <button
-                    onClick={() => removeTag(tag)}
-                    className="text-slate-500 hover:text-red-400 transition-colors"
-                    title="Remove tag"
+                    onClick={() => removeProperty(k)}
+                    className="text-slate-600 hover:text-red-400 transition-colors text-xs"
+                    title="Remove"
                   >
                     ×
                   </button>
-                </span>
+                </div>
               ))}
             </div>
-            <form onSubmit={addTag} className="flex gap-2">
+            <form onSubmit={addProperty} className="flex gap-2">
               <input
                 type="text"
-                value={newTag}
-                onChange={(e) => setNewTag(e.target.value)}
-                placeholder="Add tag…"
+                value={newKey}
+                onChange={(e) => setNewKey(e.target.value)}
+                placeholder="key"
+                className="w-28 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-slate-500"
+              />
+              <input
+                type="text"
+                value={newValue}
+                onChange={(e) => setNewValue(e.target.value)}
+                placeholder="value (optional)"
                 className="flex-1 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-slate-500"
               />
               <button
                 type="submit"
-                disabled={!newTag.trim()}
+                disabled={!newKey.trim() || saving}
                 className="px-3 py-1 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:text-slate-600 rounded text-sm transition-colors"
               >
                 Add
               </button>
             </form>
           </Section>
-
-          {/* Locations */}
-          <Section title="Locations">
-            <div className="space-y-1">
-              {locations.map((loc, i) => (
-                <div
-                  key={i}
-                  className="flex items-center justify-between gap-2 text-sm"
-                >
-                  <span className="text-slate-300 font-mono text-xs truncate flex-1">
-                    {loc.path}
-                  </span>
-                  <span
-                    className={`shrink-0 text-xs ${
-                      loc.online ? "text-green-400" : "text-slate-600"
-                    }`}
-                  >
-                    {loc.online ? "online" : "offline"}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </Section>
-
-          {/* Linked hashes */}
-          {(detail.links?.length ?? 0) > 0 && (
-            <Section title="Linked files">
-              <div className="space-y-1">
-                {detail.links!.map((h) => (
-                  <Link
-                    key={h}
-                    href={`/content/${h}`}
-                    className="block text-xs font-mono text-slate-400 hover:text-slate-200 transition-colors truncate"
-                  >
-                    {h}
-                  </Link>
-                ))}
-              </div>
-            </Section>
-          )}
-
-          {/* Metadata */}
-          {Object.keys(metaGroups).length > 0 && (
-            <Section title="Metadata">
-              <div className="space-y-4">
-                {Object.entries(metaGroups).map(([group, rows]) => (
-                  <div key={group}>
-                    <p className="text-xs text-slate-500 uppercase tracking-wide mb-1">{group}</p>
-                    <InfoTable>
-                      {rows.map((r) => (
-                        <InfoRow key={r.key} label={r.key} value={r.value} />
-                      ))}
-                    </InfoTable>
-                  </div>
-                ))}
-              </div>
-            </Section>
-          )}
-
-          {/* Dedup */}
-          {locations.length > 1 && (
-            <Section title="Deduplicate">
-              {dedupState === "done" ? (
-                <p className="text-sm text-slate-400">{dedupResult}</p>
-              ) : dedupState === "confirm" && dedupKeep ? (
-                <div className="space-y-3">
-                  <p className="text-sm text-slate-300">
-                    Keep <code className="text-xs text-yellow-400">{dedupKeep.path}</code> and
-                    delete all other copies on online drives?{" "}
-                    <span className="text-red-400">This is permanent.</span>
-                  </p>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={confirmDedup}
-                      className="px-3 py-1.5 bg-red-800 hover:bg-red-700 text-red-100 rounded text-sm transition-colors"
-                    >
-                      Yes, delete other copies
-                    </button>
-                    <button
-                      onClick={() => setDedupState("idle")}
-                      className="px-3 py-1.5 border border-slate-700 hover:border-slate-500 text-slate-400 rounded text-sm transition-colors"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  <p className="text-sm text-slate-400">
-                    Choose which copy to keep. All others will be deleted from online drives.
-                  </p>
-                  {locations
-                    .filter((l) => l.online)
-                    .map((loc, i) => (
-                      <button
-                        key={i}
-                        onClick={() => {
-                          setDedupKeep({ drive: loc.drive_id ?? "", path: loc.path ?? "" });
-                          setDedupState("confirm");
-                        }}
-                        className="block w-full text-left text-xs font-mono text-slate-400 border border-slate-800 rounded px-3 py-2 hover:border-slate-600 hover:text-slate-200 transition-colors"
-                      >
-                        Keep: {loc.path}
-                      </button>
-                    ))}
-                </div>
-              )}
-            </Section>
-          )}
         </div>
       </div>
     </div>
@@ -296,7 +212,7 @@ function InfoTable({ children }: { children: React.ReactNode }) {
 function InfoRow({ label, value }: { label: string; value: string }) {
   return (
     <tr className="border-b border-slate-800/60 last:border-0">
-      <td className="py-1 pr-3 text-slate-500 whitespace-nowrap">{label}</td>
+      <td className="py-1 pr-3 text-slate-500 whitespace-nowrap text-xs">{label}</td>
       <td className="py-1 text-slate-300 font-mono text-xs break-all">{value}</td>
     </tr>
   );

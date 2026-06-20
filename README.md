@@ -1,52 +1,84 @@
 # hashit-web
 
-A web front-end for **[hashit](https://github.com/dougwa/hashit)** — a
-content-hash index and logical filesystem over your drives. hashit exposes a
-headless HTTP API (`hashit-api`) and no UI; this project provides the
-user-facing experience on top of it.
+A web front-end for **hashit** — a content-hash index over your files. The
+backend is split into two local gRPC services; this project bridges them to
+a browser UI via Next.js API routes.
 
 ## What it's for
 
-Browse and manage files across drives by **content**, not just path:
+- **Search** the file index by name, hash prefix, or tag/property filters —
+  paginated for large collections.
+- **Inspect** a file's detail: hash, type, size, every path it appears at,
+  extracted metadata (EXIF etc.), and user-set properties.
+- **Curate**: add, edit, or remove user properties on any file (hash-keyed,
+  so changes apply to every copy).
 
-- **Browse** the logical hierarchy per drive (folders synthesized from indexed
-  files), with online/offline awareness when a drive is unplugged.
-- **Search** the reverse index: by file type, extension, tag, favorite, drive,
-  presence, or metadata key/value — paginated for very large collections.
-- **Inspect** a file's detail: metadata (EXIF, etc.), every location it appears
-  at, tags, links, and a thumbnail.
-- **Curate**: add/remove tags and favorites, link related files (e.g. a JPG and
-  its RAW). These are hash-keyed, so they apply to every copy.
-- **Deduplicate**: "keep this" — delete the other copies of identical content
-  (a guarded, destructive action).
+## Prerequisites
 
-## The API
+Two backend services must be running before starting the front-end:
 
-This UI talks to hashit-api over HTTP (default `http://127.0.0.1:8087`, routes
-under `/v1`). The contract is documented here:
+| Service | Command | Default port |
+|---------|---------|-------------|
+| `hashit-idx` | `hashit-idx <root> [<root>…]` | `127.0.0.1:50551` |
+| `hashit` FileOps | `hashit watch <root> --serve --meta-all` | `127.0.0.1:50552` |
 
-- **[`docs/openapi.yaml`](docs/openapi.yaml)** — OpenAPI 3.0 spec for all
-  endpoints and response schemas.
-- **[`docs/api-examples.md`](docs/api-examples.md)** — concrete request/response
-  examples.
-
-Auth is a bearer token (or `?token=`); writes require the server to run with
-`--allow-write`. See the spec for details.
-
-## Running the backend locally
+From the `../hashit` workspace:
 
 ```sh
-git clone https://github.com/dougwa/hashit.git
-cd hashit
-cargo build --release --features serve
-./target/release/hashit index ~/path/to/files     # build the index
-./target/release/hashit serve --allow-write --no-token
+cargo build --release
+
+# 1. Build/refresh the file index
+./target/release/hashit scan ~/path/to/files --meta-all
+
+# 2. Start the search daemon (keep running)
+./target/release/hashit-idx ~/path/to/files
+
+# 3. Start the watcher + FileOps server (keep running)
+./target/release/hashit watch ~/path/to/files --serve --meta-all
 ```
 
-(While the API PRs are in review it lives on the `api-mutations` branch.)
+## Running the front-end
 
-## Status
+```sh
+# 1. Install dependencies
+npm install
 
-Greenfield. The backend API (M1–M3.5) is complete; the front-end stack here is
-not yet chosen — see [`CLAUDE.md`](CLAUDE.md) for orientation and suggested
-first steps.
+# 2. Copy the example env file and edit if needed
+cp .env.local.example .env.local
+# Edit .env.local if your backends run on non-default addresses or
+# if you want to enable the PUBLIC_API_KEY auth gate.
+
+# 3. Start the dev server
+npm run dev
+# -> http://localhost:3000
+```
+
+For a production build:
+
+```sh
+npm run build
+npm start
+```
+
+## Configuration
+
+All config lives in `.env.local`:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HASHIT_SEARCH_ADDR` | `127.0.0.1:50551` | Address of the hashit-idx gRPC Search daemon |
+| `HASHIT_FILEOPS_ADDR` | `127.0.0.1:50552` | Address of the hashit FileOps gRPC server |
+| `PUBLIC_API_KEY` | *(blank = open)* | Bearer token required to use the UI; leave blank on a private network |
+
+## Architecture
+
+```
+Browser
+  └── Next.js (localhost:3000)
+        ├── /api/search  ──gRPC──►  hashit-idx :50551  (Query / Stats)
+        ├── /api/stats   ──gRPC──►  hashit-idx :50551
+        └── /api/meta    ──gRPC──►  hashit      :50552  (GetMeta / PutMeta)
+```
+
+gRPC contracts are in `proto/` (kept in sync with `../hashit/proto/`).
+See [`CLAUDE.md`](CLAUDE.md) for agent/developer orientation.

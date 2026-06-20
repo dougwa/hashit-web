@@ -1,8 +1,8 @@
 "use client";
-import { useRouter, usePathname, useSearchParams } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
 import { useState, useTransition } from "react";
 import Link from "next/link";
-import type { QueryRow } from "@/lib/types";
+import type { FileResult } from "@/lib/types";
 
 const FILE_TYPE_ICONS: Record<string, string> = {
   image: "🖼",
@@ -13,19 +13,20 @@ const FILE_TYPE_ICONS: Record<string, string> = {
 };
 
 interface Filters {
-  type?: string;
-  ext?: string;
-  tag?: string;
-  favorite?: string;
-  offline?: string;
+  name?: string;
+  hash?: string;
+  tag_key?: string;
+  tag_value?: string;
 }
 
 interface Props {
-  initialResults: QueryRow[];
+  initialResults: FileResult[];
   initialFilters: Filters;
   offset: number;
   pageSize: number;
+  total: number;
   hasError: boolean;
+  thumbnails?: Record<string, string>;
 }
 
 export default function SearchInterface({
@@ -33,32 +34,31 @@ export default function SearchInterface({
   initialFilters,
   offset,
   pageSize,
+  total,
   hasError,
+  thumbnails = {},
 }: Props) {
   const router = useRouter();
   const pathname = usePathname();
   const [isPending, startTransition] = useTransition();
-
   const [filters, setFilters] = useState<Filters>(initialFilters);
 
   function applyFilters(updated: Filters) {
     setFilters(updated);
     const params = new URLSearchParams();
-    if (updated.type) params.set("type", updated.type);
-    if (updated.ext) params.set("ext", updated.ext);
-    if (updated.tag) params.set("tag", updated.tag);
-    if (updated.favorite === "true") params.set("favorite", "true");
-    if (updated.offline === "true") params.set("offline", "true");
+    if (updated.name) params.set("name", updated.name);
+    if (updated.hash) params.set("hash", updated.hash);
+    if (updated.tag_key) params.set("tag_key", updated.tag_key);
+    if (updated.tag_value) params.set("tag_value", updated.tag_value);
     startTransition(() => router.push(`${pathname}?${params}`));
   }
 
   function paginate(newOffset: number) {
     const params = new URLSearchParams();
-    if (filters.type) params.set("type", filters.type);
-    if (filters.ext) params.set("ext", filters.ext);
-    if (filters.tag) params.set("tag", filters.tag);
-    if (filters.favorite === "true") params.set("favorite", "true");
-    if (filters.offline === "true") params.set("offline", "true");
+    if (filters.name) params.set("name", filters.name);
+    if (filters.hash) params.set("hash", filters.hash);
+    if (filters.tag_key) params.set("tag_key", filters.tag_key);
+    if (filters.tag_value) params.set("tag_value", filters.tag_value);
     params.set("offset", String(newOffset));
     startTransition(() => router.push(`${pathname}?${params}`));
   }
@@ -67,53 +67,42 @@ export default function SearchInterface({
     <div>
       {/* Filter bar */}
       <div className="flex flex-wrap items-center gap-3 mb-6 pb-4 border-b border-slate-800">
-        <Select
-          value={filters.type ?? ""}
-          onChange={(v) => applyFilters({ ...filters, type: v, offset: undefined } as Filters)}
-          options={[
-            { value: "", label: "All types" },
-            { value: "image", label: "Images" },
-            { value: "video", label: "Video" },
-            { value: "audio", label: "Audio" },
-            { value: "text", label: "Text" },
-            { value: "application", label: "Application" },
-          ]}
+        <TextFilter
+          placeholder="Name search"
+          value={filters.name ?? ""}
+          onChange={(v) => applyFilters({ ...filters, name: v })}
         />
         <TextFilter
-          placeholder="Extension (e.g. cr2)"
-          value={filters.ext ?? ""}
-          onChange={(v) => applyFilters({ ...filters, ext: v })}
+          placeholder="Hash prefix"
+          value={filters.hash ?? ""}
+          onChange={(v) => applyFilters({ ...filters, hash: v })}
         />
         <TextFilter
-          placeholder="Tag"
-          value={filters.tag ?? ""}
-          onChange={(v) => applyFilters({ ...filters, tag: v })}
+          placeholder="Property key"
+          value={filters.tag_key ?? ""}
+          onChange={(v) => applyFilters({ ...filters, tag_key: v })}
         />
-        <Checkbox
-          label="Favorites"
-          checked={filters.favorite === "true"}
-          onChange={(v) => applyFilters({ ...filters, favorite: v ? "true" : "" })}
-        />
-        <Checkbox
-          label="Offline only"
-          checked={filters.offline === "true"}
-          onChange={(v) => applyFilters({ ...filters, offline: v ? "true" : "" })}
+        <TextFilter
+          placeholder="Property value (optional)"
+          value={filters.tag_value ?? ""}
+          onChange={(v) => applyFilters({ ...filters, tag_value: v })}
         />
       </div>
 
       {hasError && (
-        <p className="text-red-400 text-sm mb-4">Error loading results.</p>
+        <p className="text-red-400 text-sm mb-4">
+          Could not reach hashit-idx — is it running?
+        </p>
       )}
 
       <div className={isPending ? "opacity-50 pointer-events-none" : ""}>
-        {/* Results grid */}
         {initialResults.length === 0 && !hasError && (
           <p className="text-slate-400 text-sm">No results.</p>
         )}
 
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
-          {initialResults.map((row) => (
-            <ResultCard key={row.hash} row={row} />
+        <div className="divide-y divide-slate-800/60">
+          {initialResults.map((file) => (
+            <ResultRow key={file.path} file={file} thumbnail={thumbnails[file.path]} />
           ))}
         </div>
 
@@ -129,6 +118,7 @@ export default function SearchInterface({
             </button>
             <span className="text-slate-500">
               {offset + 1}–{offset + initialResults.length}
+              {total > 0 && ` of ${total.toLocaleString()}`}
             </span>
             <button
               onClick={() => paginate(offset + pageSize)}
@@ -144,70 +134,39 @@ export default function SearchInterface({
   );
 }
 
-function ResultCard({ row }: { row: QueryRow }) {
-  const icon = row.file_type ? (FILE_TYPE_ICONS[row.file_type] ?? "📄") : "📄";
-  const tags = row.tags ? row.tags.split(",").filter(Boolean) : [];
+function ResultRow({ file, thumbnail }: { file: FileResult; thumbnail?: string }) {
+  const icon = file.file_type ? (FILE_TYPE_ICONS[file.file_type] ?? "📄") : "📄";
+  const date = file.mtime ? new Date(file.mtime).toLocaleDateString() : null;
 
   return (
     <Link
-      href={`/content/${row.hash}`}
-      className="block border border-slate-800 rounded-lg overflow-hidden hover:border-slate-600 transition-colors group"
+      href={`/content/${encodeURIComponent(file.hash)}`}
+      className="flex items-center gap-3 py-2 px-1 hover:bg-slate-900/40 rounded transition-colors group"
     >
-      {row.has_thumb ? (
-        <img
-          src={`/api/v1/thumb/${row.hash}`}
-          alt=""
-          className="w-full aspect-square object-cover bg-slate-800"
-          loading="lazy"
-        />
-      ) : (
-        <div className="w-full aspect-square bg-slate-900 flex items-center justify-center text-4xl">
-          {icon}
-        </div>
-      )}
-      <div className="p-2">
-        <p className="text-xs text-slate-300 truncate">{row.sample_path?.split("/").pop()}</p>
-        <div className="flex items-center justify-between mt-1">
-          <span className="text-xs text-slate-500">{formatBytes(row.size ?? 0)}</span>
-          {!row.online && (
-            <span className="text-xs text-slate-600">offline</span>
-          )}
-        </div>
-        {tags.length > 0 && (
-          <div className="flex flex-wrap gap-1 mt-1">
-            {tags.slice(0, 2).map((t) => (
-              <span key={t} className="text-xs bg-slate-800 text-slate-400 px-1 rounded">
-                {t}
-              </span>
-            ))}
-          </div>
+      <span className="w-8 h-8 flex-shrink-0 flex items-center justify-center overflow-hidden rounded">
+        {thumbnail ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={`/api/file?path=${encodeURIComponent(thumbnail)}`}
+            alt=""
+            className="w-8 h-8 object-cover rounded"
+          />
+        ) : (
+          <span className="text-lg">{icon}</span>
         )}
+      </span>
+      <div className="flex-1 min-w-0">
+        <p className="text-sm text-slate-200 group-hover:text-white truncate">{file.name}</p>
+        <p className="text-xs text-slate-500 truncate">{file.path}</p>
       </div>
+      <div className="shrink-0 text-right space-y-0.5">
+        <p className="text-xs text-slate-400">{formatBytes(file.size)}</p>
+        {date && <p className="text-xs text-slate-600">{date}</p>}
+      </div>
+      <span className="text-xs text-slate-700 font-mono hidden sm:block w-24 shrink-0 truncate">
+        {file.hash.slice(0, 10)}
+      </span>
     </Link>
-  );
-}
-
-function Select({
-  value,
-  onChange,
-  options,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  options: { value: string; label: string }[];
-}) {
-  return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      className="bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-sm text-slate-200 focus:outline-none focus:border-slate-500"
-    >
-      {options.map((o) => (
-        <option key={o.value} value={o.value}>
-          {o.label}
-        </option>
-      ))}
-    </select>
   );
 }
 
@@ -226,30 +185,8 @@ function TextFilter({
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
-      className="bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-slate-500 w-36"
+      className="bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-slate-500 w-40"
     />
-  );
-}
-
-function Checkbox({
-  label,
-  checked,
-  onChange,
-}: {
-  label: string;
-  checked: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <label className="flex items-center gap-1.5 text-sm text-slate-400 cursor-pointer select-none">
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-        className="accent-slate-400"
-      />
-      {label}
-    </label>
   );
 }
 

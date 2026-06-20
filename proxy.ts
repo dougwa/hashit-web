@@ -14,7 +14,11 @@ export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   // Public API routes — require auth, return 401 JSON on failure
-  if (pathname.startsWith("/api/v1")) {
+  if (
+    pathname.startsWith("/api/search") ||
+    pathname.startsWith("/api/stats") ||
+    pathname.startsWith("/api/meta")
+  ) {
     if (!isAuthenticated(request)) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }

@@ -1,82 +1,94 @@
 # hashit-web — agent orientation
 
-This repo is the **web front-end for hashit-api**. The backend (`hashit`) is a
-separate Rust project at `../hashit`; it exposes a headless HTTP API and ships
-**no UI**. Your job here is to build the user-facing web experience on top of
-that API. Do **not** put UI code in `../hashit`.
+This repo is the **web front-end for hashit**. The backend is a Rust workspace
+at `../hashit` split into two local-only gRPC services:
+
+| Service | Default address | Role |
+|---------|----------------|------|
+| `hashit` (FileOps) | `127.0.0.1:50552` | Mutations: cp/mv/rm/get-meta/put-meta |
+| `hashit-idx` (Search) | `127.0.0.1:50551` | Read-only global index: query/stats |
+
+The web layer bridges browser requests to these services through Next.js API
+routes using `@grpc/grpc-js`. **Do not put UI code in `../hashit`.**
 
 ## What the backend is
 
-`hashit` maintains a content-hash index of files across drives (a logical
-filesystem layer over native disks). Key ideas the UI must respect:
+`hashit` maintains a content-hash index of files across local directories.
 
-- **Everything is keyed by content hash.** The same bytes on multiple
-  drives/paths are one "content" with many "locations". Tags, favorites, links,
-  metadata, and thumbnails attach to the **hash**, so they apply to every copy.
-- **Drive-aware / offline.** Each copy lives on a drive that may be online or
-  offline (unplugged). Query results say whether any copy is currently online.
-- **Reverse index.** Query/filter by file type, extension, tag, favorite, drive,
-  presence (offline), or a metadata key/value — paginated.
-- **Logical hierarchy.** Browse per-drive directory trees (`ls`/`stat`) even
-  though storage is hash-keyed.
+Key ideas:
+- **Content-keyed.** EXIF metadata, thumbnails, and user properties attach to
+  the **hash** — every copy of the same bytes shares one metadata record.
+- **hashit-idx** holds a SQLite index rebuilt from `.hashit` manifests and
+  `*.meta.json` files. It is read-only and never writes source files.
+- **hashit FileOps** exposes hash-aware file operations and per-path metadata
+  reads/writes. It keeps manifests consistent regardless of whether changes
+  came from the CLI or the gRPC server.
 
-## The API contract
+## gRPC contracts
 
-- **Spec:** [`docs/openapi.yaml`](docs/openapi.yaml) — full endpoint + schema
-  definitions (OpenAPI 3.0).
-- **Examples:** [`docs/api-examples.md`](docs/api-examples.md) — real curl calls
-  and response shapes.
-- Base URL default `http://127.0.0.1:8087`, all routes under `/v1`.
-- **Auth:** bearer token (`Authorization: Bearer <t>`) or `?token=<t>`, unless the
-  server runs with `--no-token`. CORS is permissive (any origin).
-- **Reads:** `drives`, `ls`, `stat`, `query`, `content/:hash` (streams bytes),
-  `content/:hash/meta`, `thumb/:hash`.
-- **Writes (require backend `--allow-write`, else 403):** tag add/remove,
-  favorite set/clear, link/unlink, and **dedup "keep this"** (destructive —
-  deletes other copies; requires `confirm: true`).
+Defined in `proto/` (kept in sync with `../hashit/proto/`):
 
-## Running the backend for development
+**`proto/search.proto`** → `hashit.search.v1.Search` (hashit-idx):
+- `Query(QueryRequest) → QueryResponse` — paginated search by name, hash, size, date, tags/properties
+- `Stats(StatsRequest) → StatsResponse` — index-wide file/hash/tag counts
 
-From `../hashit` (the API lives behind the `serve` cargo feature):
+**`proto/fileops.proto`** → `hashit.fileops.v1.FileOps` (hashit):
+- `GetMeta(GetMetaRequest) → GetMetaResponse` — per-path metadata (hash, size, type, tags, properties, thumbnail path)
+- `PutMeta(PutMetaRequest) → OpResponse` — set/remove user properties by file path
+- `Cp / Mv / Rm` — hash-aware file operations
+
+## JSON API (Next.js bridge)
+
+Browser → Next.js API routes → gRPC backend:
+
+| Route | Method | Backend |
+|-------|--------|---------|
+| `/api/search` | GET | hashit-idx Query |
+| `/api/stats` | GET | hashit-idx Stats |
+| `/api/meta` | GET `?path[]=...` | hashit GetMeta |
+| `/api/meta` | POST `{paths, set, remove}` | hashit PutMeta |
+| `/api/auth` | POST / DELETE | session cookie auth |
+
+Query params for `/api/search`: `name`, `hash`, `tag_key`, `tag_value`,
+`min_size`, `max_size`, `min_date`, `max_date`, `limit`, `offset`.
+
+## Running the backends for development
+
+From `../hashit`:
 
 ```sh
-# build with the server
-cargo build --release --features serve     # binary: ../hashit/target/release/hashit
+cargo build --release
 
-# 1) build/refresh the index over some files (default build already has `extract`)
-./target/release/hashit index ~/somewhere/with/files
+# Index files and extract metadata
+./target/release/hashit scan ~/path/to/files --meta-all
 
-# 2) serve the API (enable writes + skip token for easy local dev)
-./target/release/hashit serve --allow-write --no-token
-#    -> http://127.0.0.1:8087   (use --token <t> to require auth)
+# Start hashit-idx (search daemon)
+./target/release/hashit-idx ~/path/to/files
+#    -> gRPC on 127.0.0.1:50551
+
+# Start hashit watcher + FileOps server
+./target/release/hashit watch ~/path/to/files --serve --meta-all
+#    -> gRPC FileOps on 127.0.0.1:50552
 ```
 
-> The API is not yet merged to `main` in `../hashit`; it currently lives on the
-> branch `api-mutations` (PR stack #4→#7). Check out that branch to build it
-> until the PRs land.
+## Env vars
 
-## Constraints & gotchas for the UI
+Set in `.env.local` (see `.env.local.example`):
 
-- **Paginate.** `query` is server-paginated (`limit`/`offset`, max 1000); the
-  index can be huge (designed for ~10TB / millions of files). Never try to load
-  everything — page or virtualize.
-- **Thumbnails** are generated on demand at `GET /v1/thumb/:hash` (JPEG); a 404
-  means the format wasn't thumbnailable.
-- **Offline content** is normal — show it, but actions on offline copies won't
-  work (e.g. content streaming 404s, dedup skips them).
-- **Dedup is destructive.** Surface a clear confirm step; the API itself refuses
-  without `{"confirm": true}` and only with `--allow-write`.
-- **Nullable fields:** `DirEntry` omits file-only fields for directories and
-  vice-versa; `file_type`/`ext`/`link_group` can be null.
+```
+HASHIT_SEARCH_ADDR=127.0.0.1:50551   # hashit-idx gRPC address
+HASHIT_FILEOPS_ADDR=127.0.0.1:50552  # hashit FileOps gRPC address
+PUBLIC_API_KEY=<secret>               # web UI auth key (blank = open)
+```
 
-## Suggested first steps
+## Key constraints
 
-1. Decide the stack (your call — any standard web framework). Confirm with the
-   user before scaffolding.
-2. Generate a typed client from `docs/openapi.yaml` (or hand-write a thin fetch
-   wrapper) with a configurable base URL + token.
-3. Build the core flows: drive list → browse (`ls`) / search (`query`) → detail
-   (`meta` + `thumb`) → edits (tags/favorites/links) → dedup with confirm.
-
-See [`README.md`](README.md) for the project overview and `../hashit/ROADMAP.md`
-for where this fits in the larger plan.
+- **Paginate.** The index can hold millions of files. Always use `limit`/`offset`.
+- **GetMeta takes file paths, not hashes.** To show a detail view for a hash,
+  first `Query({hash})` to resolve paths, then `GetMeta({paths})`.
+- **Properties are hash-keyed.** `PutMeta` on any path updates the metadata for
+  that hash — all copies share one metadata record. One path is sufficient.
+- **Tags vs properties.** `MetaEntry.tags` are extracted (EXIF etc., read-only).
+  `MetaEntry.properties` are user-authored (read-write via PutMeta).
+- **No content streaming or HTTP thumbnails.** `MetaEntry.thumbnail` is a local
+  filesystem path — the web layer does not serve it.
