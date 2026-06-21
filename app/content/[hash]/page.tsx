@@ -16,7 +16,7 @@ export default async function ContentPage({ params }: Props) {
   // Resolve all file paths recorded for this hash.
   let files: FileResult[] = [];
   try {
-    const result = await queryFiles({ hash, limit: 500, offset: 0 });
+    const result = await queryFiles({ query: `hash:${hash}`, limit: 500, offset: 0 });
     files = result.files ?? [];
   } catch {
     // hashit-idx unreachable

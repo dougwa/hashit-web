@@ -29,7 +29,7 @@ Key ideas:
 Defined in `proto/` (kept in sync with `../hashit/proto/`):
 
 **`proto/search.proto`** → `hashit.search.v1.Search` (hashit-idx):
-- `Query(QueryRequest) → QueryResponse` — paginated search by name, hash, size, date, tags/properties
+- `Query(QueryRequest) → QueryResponse` — paginated search via a query-language string (`query` field; see `../hashit/QUERY.md`)
 - `Stats(StatsRequest) → StatsResponse` — index-wide file/hash/tag counts
 
 **`proto/fileops.proto`** → `hashit.fileops.v1.FileOps` (hashit):
@@ -49,8 +49,33 @@ Browser → Next.js API routes → gRPC backend:
 | `/api/meta` | POST `{paths, set, remove}` | hashit PutMeta |
 | `/api/auth` | POST / DELETE | session cookie auth |
 
-Query params for `/api/search`: `name`, `hash`, `tag_key`, `tag_value`,
-`min_size`, `max_size`, `min_date`, `max_date`, `limit`, `offset`.
+Query params for `/api/search`: `q` (query-language string — see
+`../hashit/QUERY.md`), `limit`, `offset`. The `q` string is passed straight
+through to the backend, which parses it server-side. Example:
+`/api/search?q=report+ext:jpg+mtime:{last month}`.
+
+## Explore view (`/explore`)
+
+The default UI is a **filesystem** folder browser rooted at `/`, served by the
+`/explore` server component (`app/explore/page.tsx` + `components/Explorer.tsx`).
+
+- **Browsing is filesystem-truth, not the index.** Directory contents come from
+  `fs.readdir` (`lib/browse.ts`), one level at a time, so it scales regardless of
+  index size and shows every folder/file on disk. Unreadable folders (EACCES
+  etc.) surface the error inline. Files in the current directory are *enriched*
+  with index data (hash → links to `/content/[hash]`, plus size/mtime/thumbnail)
+  via a `dir=<path>` query; non-indexed files render dimmed.
+- **Search is index-only**, scoped relative to the directory being browsed. The
+  scope selector compiles to query-language terms (`lib/browse.ts` `scopedQuery`):
+  | Scope | Term prepended to the user's query |
+  |-------|-----------------------------------|
+  | This folder | `dir=<abs>` (files directly in the directory) |
+  | This folder + subfolders | `path:=<abs>/%` (LIKE glob on full path — direct *and* nested) |
+  | Everywhere | *(none — whole index)* |
+  Subtree uses `path:=` (not `dir:=`) so it includes the directory's own files,
+  and the trailing `/` avoids sibling bleed (`<abs>2/...`).
+
+`/` and the legacy `/search` redirect to `/explore`.
 
 ## Running the backends for development
 

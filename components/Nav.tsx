@@ -15,12 +15,15 @@ export default function Nav() {
 
   return (
     <nav className="border-b border-slate-800 px-4 py-3 flex items-center gap-6">
-      <Link href="/search" className="font-bold text-slate-100 text-lg tracking-tight">
+      <Link href="/explore" className="font-bold text-slate-100 text-lg tracking-tight">
         hashit
       </Link>
       <div className="flex items-center gap-5 text-sm flex-1">
-        <NavLink href="/search" active={pathname.startsWith("/search") || pathname.startsWith("/content")}>
-          Search
+        <NavLink
+          href="/explore"
+          active={pathname.startsWith("/explore") || pathname.startsWith("/content")}
+        >
+          Explore
         </NavLink>
       </div>
       <button
