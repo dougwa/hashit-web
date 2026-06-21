@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 export default function LoginPage() {
@@ -7,6 +7,15 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const router = useRouter();
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Focus on the client after hydration. autoFocus renders the attribute
+  // server-side, which lets the environment inject focus-tracking attributes
+  // before React hydrates and trips a hydration mismatch that leaves the form
+  // non-interactive (onChange never fires, so the button stays disabled).
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -18,7 +27,7 @@ export default function LoginPage() {
       body: JSON.stringify({ token }),
     });
     if (res.ok) {
-      router.push("/drives");
+      router.push("/explore");
     } else {
       setError("Invalid token");
       setLoading(false);
@@ -32,11 +41,11 @@ export default function LoginPage() {
         <p className="text-slate-400 text-sm mb-6">Enter your API key to continue.</p>
         <form onSubmit={submit} className="space-y-3">
           <input
+            ref={inputRef}
             type="password"
             value={token}
             onChange={(e) => setToken(e.target.value)}
             placeholder="API key"
-            autoFocus
             className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-slate-100 text-sm focus:outline-none focus:border-slate-500 placeholder:text-slate-600"
           />
           {error && <p className="text-red-400 text-sm">{error}</p>}
