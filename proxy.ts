@@ -42,5 +42,9 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon\\.ico|public/).*)"],
+  // Exclude all Next.js internals (`_next/*` — static assets, RSC data, and dev
+  // endpoints like the HMR socket) from auth. Gating those breaks the dev
+  // runtime: intercepted `_next` requests get 307'd to /login instead of their
+  // expected payloads, which stops the client from hydrating.
+  matcher: ["/((?!_next/|favicon\\.ico|public/).*)"],
 };
